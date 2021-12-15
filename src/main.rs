@@ -1,37 +1,28 @@
+use fehler::throws;
+use std::io::{stdout, Write};
+use std::{
+    io::{self, stdin},
+    sync::mpsc,
+    thread,
+    time::Duration,
+};
 use termion::event::Key;
 use termion::input::TermRead;
-use std::{io::{self, stdin}, sync::mpsc, thread, time::Duration};
 use termion::raw::IntoRawMode;
 use termion::screen::*;
-use std::io::{Write, stdout};
-use fehler::throws;
 type Error = anyhow::Error;
 
 // Fonts from 0x0..0xF
 const FONT: [u8; 80] = [
-    0xF0, 0x90, 0x90, 0x90, 0xF0,
-    0x20, 0x60, 0x20, 0x20, 0x70,
-    0xF0, 0x10, 0xF0, 0x80, 0xF0,
-    0xF0, 0x10, 0xF0, 0x10, 0xF0,
-    0x90, 0x90, 0xF0, 0x10, 0x10,
-    0xF0, 0x80, 0xF0, 0x10, 0xF0,
-    0xF0, 0x80, 0xF0, 0x90, 0xF0,
-    0xF0, 0x10, 0x20, 0x40, 0x40,
-    0xF0, 0x90, 0xF0, 0x90, 0xF0,
-    0xF0, 0x90, 0xF0, 0x10, 0xF0,
-    0xF0, 0x90, 0xF0, 0x90, 0x90,
-    0xE0, 0x90, 0xE0, 0x90, 0xE0,
-    0xF0, 0x80, 0x80, 0x80, 0xF0,
-    0xE0, 0x90, 0x90, 0x90, 0xE0,
-    0xF0, 0x80, 0xF0, 0x80, 0xF0,
-    0xF0, 0x80, 0xF0, 0x80, 0x80,
+    0xF0, 0x90, 0x90, 0x90, 0xF0, 0x20, 0x60, 0x20, 0x20, 0x70, 0xF0, 0x10, 0xF0, 0x80, 0xF0, 0xF0,
+    0x10, 0xF0, 0x10, 0xF0, 0x90, 0x90, 0xF0, 0x10, 0x10, 0xF0, 0x80, 0xF0, 0x10, 0xF0, 0xF0, 0x80,
+    0xF0, 0x90, 0xF0, 0xF0, 0x10, 0x20, 0x40, 0x40, 0xF0, 0x90, 0xF0, 0x90, 0xF0, 0xF0, 0x90, 0xF0,
+    0x10, 0xF0, 0xF0, 0x90, 0xF0, 0x90, 0x90, 0xE0, 0x90, 0xE0, 0x90, 0xE0, 0xF0, 0x80, 0x80, 0x80,
+    0xF0, 0xE0, 0x90, 0x90, 0x90, 0xE0, 0xF0, 0x80, 0xF0, 0x80, 0xF0, 0xF0, 0x80, 0xF0, 0x80, 0x80,
 ];
 
 const KEYBOARD: [char; 16] = [
-    '1', '2', '3', '4',
-    'q', 'w', 'e', 'r',
-    'a', 's', 'd', 'f',
-    'z', 'x', 'c', 'v',
+    '1', '2', '3', '4', 'q', 'w', 'e', 'r', 'a', 's', 'd', 'f', 'z', 'x', 'c', 'v',
 ];
 
 struct Emulator {
@@ -73,13 +64,21 @@ impl Emulator {
 
     fn load(&mut self, input: &[u8]) {
         assert!(input.len() < 0xFFFF - 0x200);
-        input.into_iter().enumerate().for_each(|(i, v)| self.ram[0x200 + i] = *v);
+        input
+            .into_iter()
+            .enumerate()
+            .for_each(|(i, v)| self.ram[0x200 + i] = *v);
     }
 
     fn cycle(&mut self) {
         let i = self.pc as usize;
         let input = (self.ram[i] as u16) << 8 | self.ram[i + 1] as u16;
-        let slice = [(input & 0xF000) >> 12, (input & 0x0F00) >> 8, (input & 0x00F0) >> 4, input & 0x000F];
+        let slice = [
+            (input & 0xF000) >> 12,
+            (input & 0x0F00) >> 8,
+            (input & 0x00F0) >> 4,
+            input & 0x000F,
+        ];
         match slice {
             // 00E0 - CLS: Clear the display.
             [0x0, 0x0, 0xE, 0x0] => {
@@ -101,7 +100,7 @@ impl Emulator {
             // to nnn.
             [0x2, nx, ny, nz] => {
                 self.sp += 1;
-                self.stack[self.sp as usize] = self.pc; 
+                self.stack[self.sp as usize] = self.pc;
                 self.pc = (nx << 8 | ny << 4 | nz) - 2;
             }
             // 3xkk - SE Vx, byte: The interpreter compares register Vx to kk,
@@ -128,12 +127,12 @@ impl Emulator {
             // 6xkk - LD Vx, byte: The interpreter puts the value kk into
             // register Vx.
             [0x6, x, kx, ky] => {
-                self.vn[x as usize] = (kx << 4 | ky) as u8; 
+                self.vn[x as usize] = (kx << 4 | ky) as u8;
             }
             // 7xkk - ADD Vx, byte: Adds the value kk to the value of register
             // Vx, then stores the result in Vx.
             [0x7, x, kx, ky] => {
-                self.vn[x as usize] = self.vn[x as usize].wrapping_add((kx << 4 | ky) as u8); 
+                self.vn[x as usize] = self.vn[x as usize].wrapping_add((kx << 4 | ky) as u8);
             }
             // 8xy0 - LD Vx, Vy: Stores the value of register Vy in register Vx.
             [0x8, x, y, 0x0] => {
@@ -288,7 +287,12 @@ impl Emulator {
             // and places the hundreds digit in memory at location in I, the
             // tens digit at location I+1, and the ones digit at location I+2.
             [0xF, x, 0x3, 0x3] => {
-                for (i, digit) in self.vn[x as usize].to_string().bytes().map(|b| (b - b'0') as u8).enumerate() {
+                for (i, digit) in self.vn[x as usize]
+                    .to_string()
+                    .bytes()
+                    .map(|b| (b - b'0') as u8)
+                    .enumerate()
+                {
                     self.ram[self.i as usize + i] = digit;
                 }
             }
@@ -325,7 +329,7 @@ enum Event {
 fn main() {
     // Colorful messages
     color_backtrace::install();
-    
+
     // Initialize emulator with rom
     let rom = include_bytes!("../roms/instructions.ch8");
     let mut emulator = Emulator::new();
@@ -344,19 +348,21 @@ fn main() {
         let stdin = stdin();
         for key in stdin.keys() {
             match key {
-                Ok(Key::Char(c)) if KEYBOARD.iter().any(|k| *k == c) => { ty.send(Event::Key(c)).expect("Error when sending event"); }
-                Ok(Key::Ctrl('c')) => { ty.send(Event::Quit).expect("Error when sending event"); },
+                Ok(Key::Char(c)) if KEYBOARD.iter().any(|k| *k == c) => {
+                    ty.send(Event::Key(c)).expect("Error when sending event");
+                }
+                Ok(Key::Ctrl('c')) => {
+                    ty.send(Event::Quit).expect("Error when sending event");
+                }
                 _ => {}
             }
         }
     });
 
     // Initialize clock
-    thread::spawn(move || {
-        loop {
-            thread::sleep(Duration::from_millis(10));
-            tx.send(Event::Tick).expect("Error when sending event");
-        }
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_millis(10));
+        tx.send(Event::Tick).expect("Error when sending event");
     });
 
     'logic: loop {
@@ -379,13 +385,16 @@ fn main() {
                 if emulator.update {
                     write!(screen, "{}", termion::clear::All)?;
                     for (i, chunk) in emulator.gfx.chunks(64).enumerate() {
-                        let line = chunk.iter().map(|p| if *p != 0 { "██" } else { "  " }).collect::<String>();
+                        let line = chunk
+                            .iter()
+                            .map(|p| if *p != 0 { "██" } else { "  " })
+                            .collect::<String>();
                         write!(screen, "{}{}", termion::cursor::Goto(1, i as u16), line)?;
                     }
                     screen.flush()?;
                     emulator.update = false;
                 }
-            },
+            }
         }
     }
     write!(screen, "{}", termion::cursor::Show)?;
