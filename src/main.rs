@@ -88,9 +88,10 @@ impl Emulator {
             // 00EE - RET: The interpreter sets the program counter to the address at
             // the top of the stack, then subtracts 1 from the stack pointer.
             [0x0, 0x0, 0xE, 0xE] => {
-                self.pc = self.stack[self.sp as usize];
                 self.sp = self.sp.saturating_sub(1);
+                self.pc = self.stack[self.sp as usize];
             }
+            [0x0, _, _, _] => {},
             // 1nnn - JP addr: The interpreter sets the program counter to nnn.
             [0x1, nx, ny, nz] => {
                 self.pc = (nx << 8 | ny << 4 | nz) - 2;
@@ -99,8 +100,8 @@ impl Emulator {
             // puts the current PC on the top of the stack. The PC is then set
             // to nnn.
             [0x2, nx, ny, nz] => {
+                self.stack[self.sp as usize] = self.pc + 2;
                 self.sp += 1;
-                self.stack[self.sp as usize] = self.pc;
                 self.pc = (nx << 8 | ny << 4 | nz) - 2;
             }
             // 3xkk - SE Vx, byte: The interpreter compares register Vx to kk,
@@ -141,50 +142,50 @@ impl Emulator {
             // 8xy1 - OR Vx, Vy: Performs a bitwise OR on the values of Vx and
             // Vy, then stores the result in Vx.
             [0x8, x, y, 0x1] => {
-                self.vn[x as usize] = self.vn[x as usize] | self.vn[y as usize];
+                self.vn[x as usize] |= self.vn[y as usize];
             }
             // 8xy2 - AND Vx, Vy: Performs a bitwise AND on the values of Vx and
             // Vy, then stores the result in Vx.
             [0x8, x, y, 0x2] => {
-                self.vn[x as usize] = self.vn[x as usize] & self.vn[y as usize];
+                self.vn[x as usize] &= self.vn[y as usize];
             }
             // 8xy3 - XOR Vx, Vy: Performs a bitwise exclusive OR on the values
             // of Vx and Vy, then stores the result in Vx.
             [0x8, x, y, 0x3] => {
-                self.vn[x as usize] = self.vn[x as usize] ^ self.vn[y as usize];
+                self.vn[x as usize] ^= self.vn[y as usize];
             }
             // 8xy4 - ADD Vx, Vy: The values of Vx and Vy are added together. If
             // the result is greater than 8 bits (i.e., > 255,) VF is set to 1,
             // otherwise 0.
             [0x8, x, y, 0x4] => {
                 let (sum, carry) = self.vn[x as usize].overflowing_add(self.vn[y as usize]);
-                self.vn[x as usize] = sum;
                 self.vn[0xF] = if carry { 1 } else { 0 };
+                self.vn[x as usize] = sum;
             }
             // 8xy5 - SUB Vx, Vy: If Vx > Vy, then VF is set to 1, otherwise
             // 0. Then Vy is subtracted from Vx, and the results stored in Vx.
             [0x8, x, y, 0x5] => {
-                let (delta, carry) = self.vn[x as usize].overflowing_sub(self.vn[y as usize]);
-                self.vn[x as usize] = delta;
-                self.vn[0xF] = if carry { 0 } else { 1 };
+                let carry = self.vn[x as usize] > self.vn[y as usize];
+                self.vn[0xF] = if carry { 1 } else { 0 };
+                self.vn[x as usize] = self.vn[x as usize].wrapping_sub(self.vn[y as usize]);
             }
             // 8xy6 - SHR Vx {, Vy}: If the least-significant bit of Vx is 1,
             // then VF is set to 1, otherwise 0. Then Vx is divided by 2.
             [0x8, x, _, 0x6] => {
-                self.vn[0xF] = if self.vn[x as usize] & 0x1 == 1 { 1 } else { 0 };
+                self.vn[0xF] = self.vn[x as usize] & 0x1;
                 self.vn[x as usize] >>= 1;
             }
             // 8xy7 - SUBN Vx, Vy: If Vy > Vx, then VF is set to 1, otherwise
             // 0. Then Vx is subtracted from Vy, and the results stored in Vx.
             [0x8, x, y, 0x7] => {
-                let (delta, carry) = self.vn[y as usize].overflowing_sub(self.vn[x as usize]);
-                self.vn[x as usize] = delta;
-                self.vn[0xF] = if carry { 0 } else { 1 };
+                let carry = self.vn[y as usize] > self.vn[x as usize];
+                self.vn[0xF] = if carry { 1 } else { 0 };
+                self.vn[x as usize] = self.vn[y as usize].wrapping_sub(self.vn[x as usize]);
             }
             // 8xyE - SHL Vx {, Vy}: If the most-significant bit of Vx is 1,
             // then VF is set to 1, otherwise to 0. Then Vx is multiplied by 2.
             [0x8, x, _, 0xE] => {
-                self.vn[0xF] = if self.vn[x as usize] & 0x1 == 1 { 1 } else { 0 };
+                self.vn[0xF] = (self.vn[x as usize] & 0x80) >> 7;
                 self.vn[x as usize] <<= 1;
             }
             // 9xy0 - SNE Vx, Vy: The values of Vx and Vy are compared, and if
@@ -228,7 +229,7 @@ impl Emulator {
                         let x = (self.vn[x as usize] + bit) % 64;
                         let color = self.ram[(self.i + byte as u16) as usize] >> (7 - bit) & 1;
                         self.gfx[x as usize + (y as usize) * 64] ^= color;
-                        self.vn[0xF] |= color & self.gfx[x as usize + (y as usize) * 32] as u8;
+                        self.vn[0xF] |= color & self.gfx[x as usize + (y as usize) * 64] as u8;
                     }
                 }
                 self.update = true;
@@ -237,7 +238,7 @@ impl Emulator {
             // to the value of Vx is currently in the down position, PC is
             // increased by 2.
             [0xE, x, 0x9, 0xE] => {
-                if self.keyboard[x as usize] {
+                if self.keyboard[self.vn[x as usize] as usize] {
                     self.pc += 2;
                 }
             }
@@ -245,7 +246,7 @@ impl Emulator {
             // to the value of Vx is currently in the up position, PC is
             // increased by 2.
             [0xE, x, 0xA, 0x1] => {
-                if !self.keyboard[x as usize] {
+                if !self.keyboard[self.vn[x as usize] as usize] {
                     self.pc += 2;
                 }
             }
@@ -277,11 +278,12 @@ impl Emulator {
             // results are stored in I.
             [0xF, x, 0x1, 0xE] => {
                 self.i += self.vn[x as usize] as u16;
+                self.vn[0xF] = if self.i > 0x0F00 { 1 } else { 0 };
             }
             // Fx29 - LD F, Vx: The value of I is set to the location for the
             // hexadecimal sprite corresponding to the value of Vx.
             [0xF, x, 0x2, 0x9] => {
-                self.i = (self.vn[x as usize].saturating_mul(0x5)) as u16;
+                self.i = (self.vn[x as usize] as u16).wrapping_mul(0x5);
             }
             // Fx33 - LD B, Vx: The interpreter takes the decimal value of Vx,
             // and places the hundreds digit in memory at location in I, the
@@ -339,7 +341,7 @@ fn main() {
     color_backtrace::install();
 
     // Initialize emulator with rom
-    let rom = include_bytes!("../roms/games/tic-tac-toe.ch8");
+    let rom = include_bytes!("../roms/games/paddles.ch8");
     let mut emulator = Emulator::new();
     emulator.load(rom);
 
@@ -390,6 +392,8 @@ fn main() {
         match rx.recv()? {
             Event::Key(c) => {
                 if let Some(index) = KEYBOARD.iter().position(|k| *k == c) {
+                    // Reset keyboard
+                    emulator.keyboard.iter_mut().for_each(|k| *k = false);
                     emulator.keyboard[index] = true;
                 }
             }
@@ -403,9 +407,6 @@ fn main() {
             Event::Update => {
                 // Do next cycle
                 emulator.cycle();
-
-                // Reset keyboard
-                emulator.keyboard.iter_mut().for_each(|k| *k = false);
 
                 // Draw on change
                 if emulator.update {
