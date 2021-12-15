@@ -35,7 +35,7 @@ struct Emulator {
     sound: u8,
     delay: u8,
     i: u16,
-    keyboard: [bool; 16],
+    keyboard: [u8; 16],
     update: bool,
 }
 
@@ -55,7 +55,7 @@ impl Emulator {
             sound: 0,
             delay: 0,
             i: 0,
-            keyboard: [false; 16],
+            keyboard: [0; 16],
             update: true,
         }
     }
@@ -137,7 +137,7 @@ impl Emulator {
             // 7xkk - ADD Vx, byte: Adds the value kk to the value of register
             // Vx, then stores the result in Vx.
             [0x7, x, kx, ky] => {
-                self.vn[x as usize] = self.vn[x as usize] + (kx << 4 | ky) as u8;
+                self.vn[x as usize] = self.vn[x as usize].wrapping_add((kx << 4 | ky) as u8);
                 self.pc += 2;
             }
             // 8xy0 - LD Vx, Vy: Stores the value of register Vy in register Vx.
@@ -257,7 +257,7 @@ impl Emulator {
             // to the value of Vx is currently in the down position, PC is
             // increased by 2.
             [0xE, x, 0x9, 0xE] => {
-                if self.keyboard[self.vn[x as usize] as usize] {
+                if self.keyboard[self.vn[x as usize] as usize] > 0 {
                     self.pc += 4;
                 } else {
                     self.pc += 2;
@@ -267,7 +267,7 @@ impl Emulator {
             // to the value of Vx is currently in the up position, PC is
             // increased by 2.
             [0xE, x, 0xA, 0x1] => {
-                if !self.keyboard[self.vn[x as usize] as usize] {
+                if self.keyboard[self.vn[x as usize] as usize] == 0 {
                     self.pc += 4;
                 } else {
                     self.pc += 2;
@@ -282,7 +282,7 @@ impl Emulator {
             // the value of that key is stored in Vx.
             [0xF, x, 0x0, 0xA] => {
                 for (i, key) in self.keyboard.iter().enumerate() {
-                    if *key {
+                    if *key > 0 {
                         self.vn[x as usize] = i as u8;
                         self.pc += 2;
                         break;
@@ -429,13 +429,12 @@ fn main() {
         match rx.recv()? {
             Event::Key(c) => {
                 if let Some(index) = KEYBOARD.iter().position(|k| *k == c) {
-                    // Reset keyboard
-                    emulator.keyboard.iter_mut().for_each(|k| *k = false);
-                    emulator.keyboard[index] = true;
+                    emulator.keyboard[index] = 3;
                 }
             }
             Event::Quit => break 'logic,
             Event::Tick => {
+                emulator.keyboard.iter_mut().for_each(|k| *k = k.saturating_sub(1));
                 if emulator.tick() {
                     // Beep
                     write!(screen, "\x07")?;
