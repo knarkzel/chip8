@@ -1,10 +1,10 @@
 use fehler::throws;
 use std::io::{stdout, Write};
+use std::time::Instant;
 use std::{
-    io::{self, stdin},
+    io::stdin,
     sync::mpsc,
     thread,
-    time::Duration,
 };
 use termion::event::Key;
 use termion::input::TermRead;
@@ -317,11 +317,19 @@ impl Emulator {
         }
         self.pc += 2;
     }
+
+    /// Returns true when program should beep
+    fn tick(&mut self) -> bool {
+        self.delay = self.delay.saturating_sub(1);
+        self.sound = self.sound.saturating_sub(1);
+        self.sound > 0
+    }
 }
 
 enum Event {
     Key(char),
     Quit,
+    Update,
     Tick,
 }
 
@@ -331,7 +339,7 @@ fn main() {
     color_backtrace::install();
 
     // Initialize emulator with rom
-    let rom = include_bytes!("../roms/instructions.ch8");
+    let rom = include_bytes!("../roms/games/tic-tac-toe.ch8");
     let mut emulator = Emulator::new();
     emulator.load(rom);
 
@@ -341,7 +349,7 @@ fn main() {
 
     // Initialize channels
     let (tx, rx) = mpsc::channel();
-    let ty = tx.clone();
+    let (ty, tz) = (tx.clone(), tx.clone());
 
     // Initialize input
     thread::spawn(move || {
@@ -349,10 +357,10 @@ fn main() {
         for key in stdin.keys() {
             match key {
                 Ok(Key::Char(c)) if KEYBOARD.iter().any(|k| *k == c) => {
-                    ty.send(Event::Key(c)).expect("Error when sending event");
+                    tx.send(Event::Key(c)).expect("Error when sending event");
                 }
                 Ok(Key::Ctrl('c')) => {
-                    ty.send(Event::Quit).expect("Error when sending event");
+                    tx.send(Event::Quit).expect("Error when sending event");
                 }
                 _ => {}
             }
@@ -360,9 +368,21 @@ fn main() {
     });
 
     // Initialize clock
+    let mut update = Instant::now();
     thread::spawn(move || loop {
-        thread::sleep(Duration::from_millis(10));
-        tx.send(Event::Tick).expect("Error when sending event");
+        if update.elapsed().as_millis() >= 2 {
+            ty.send(Event::Update).expect("Error when sending event");
+            update = Instant::now();
+        }
+    });
+
+    // Initialize timer
+    let mut timer = Instant::now();
+    thread::spawn(move || loop {
+        if timer.elapsed().as_millis() >= 16 {
+            tz.send(Event::Tick).expect("Error when sending event");
+            timer = Instant::now();
+        }
     });
 
     'logic: loop {
@@ -375,6 +395,12 @@ fn main() {
             }
             Event::Quit => break 'logic,
             Event::Tick => {
+                if emulator.tick() {
+                    // Beep
+                    write!(screen, "\x07")?;
+                }
+            }
+            Event::Update => {
                 // Do next cycle
                 emulator.cycle();
 
