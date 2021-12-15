@@ -245,9 +245,10 @@ impl Emulator {
                     let y = (self.vn[y as usize] + byte as u8) % 32;
                     for bit in 0..8 {
                         let x = (self.vn[x as usize] + bit) % 64;
-                        let color = (self.ram[(self.i + byte as u16) as usize] >> (7 - bit)) & 0x1;
-                        self.gfx[x as usize + (y as usize) * 64] ^= color;
-                        self.vn[0xF] |= color & self.gfx[x as usize + (y as usize) * 64];
+                        let color = self.ram[(self.i + byte as u16) as usize] >> (7 - bit) & 0x1;
+                        let pixel = &mut self.gfx[x as usize + (y as usize) * 64];
+                        *pixel ^= color;
+                        self.vn[0xF] |= color & *pixel;
                     }
                 }
                 self.update = true;
@@ -447,7 +448,7 @@ fn main() {
                 // Draw on change
                 if emulator.update {
                     write!(screen, "{}", termion::clear::All)?;
-                    for (i, chunk) in emulator.gfx.chunks(64).enumerate() {
+                    for (i, chunk) in emulator.gfx.chunks(64).take(31).enumerate() {
                         write!(screen, "{}", termion::cursor::Goto(1, 1 + i as u16))?;
                         for bit in chunk {
                             let color = if *bit != 0 { 5 } else { 0 };
