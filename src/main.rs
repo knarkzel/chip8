@@ -77,7 +77,6 @@ impl Emulator {
             (input & 0x00F0) >> 4,
             input & 0x000F,
         ];
-        eprintln!("Instruction {:#04x}: {:?}", input, slice);
         match slice {
             // 00E0 - CLS: Clear the display.
             [0x0, 0x0, 0xE, 0x0] => {
@@ -214,13 +213,13 @@ impl Emulator {
             }
             // Annn - LD I, addr: The value of register I is set to nnn.
             [0xA, nx, ny, nz] => {
-                self.i = nx >> 8 | ny >> 4 | nz;
+                self.i = nx << 8 | ny << 4 | nz;
                 self.pc += 2;
             }
             // Bnnn - JP V0, addr: The program counter is set to nnn plus the
             // value of V0.
             [0xB, nx, ny, nz] => {
-                self.pc = (nx >> 8 | ny >> 4 | nz) + self.vn[0x0] as u16;
+                self.pc = (nx << 8 | ny << 4 | nz) + self.vn[0x0] as u16;
             }
             // Cxkk - RND Vx, byte: The interpreter generates a random number
             // from 0 to 255, which is then ANDed with the value kk. The results
