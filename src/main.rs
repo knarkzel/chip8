@@ -1,15 +1,13 @@
 use fehler::throws;
 use std::io::{stdout, Write};
 use std::time::Instant;
-use std::{
-    io::stdin,
-    sync::mpsc,
-    thread,
-};
+use std::{io::stdin, sync::mpsc, thread};
 use termion::event::Key;
 use termion::input::TermRead;
 use termion::raw::IntoRawMode;
 use termion::screen::*;
+use std::io::prelude::*;
+use std::fs::File;
 type Error = anyhow::Error;
 
 // Fonts from 0x0..0xF
@@ -79,35 +77,37 @@ impl Emulator {
             (input & 0x00F0) >> 4,
             input & 0x000F,
         ];
+        eprintln!("Instruction {:#04x}: {:?}", input, slice);
         match slice {
             // 00E0 - CLS: Clear the display.
             [0x0, 0x0, 0xE, 0x0] => {
                 self.gfx = [0; 64 * 32];
                 self.update = true;
+                self.pc += 2;
             }
             // 00EE - RET: The interpreter sets the program counter to the address at
             // the top of the stack, then subtracts 1 from the stack pointer.
             [0x0, 0x0, 0xE, 0xE] => {
-                self.sp = self.sp.saturating_sub(1);
+                self.sp -= 1;
                 self.pc = self.stack[self.sp as usize];
             }
-            [0x0, _, _, _] => {},
+            [0x0, _, _, _] => self.pc += 2,
             // 1nnn - JP addr: The interpreter sets the program counter to nnn.
-            [0x1, nx, ny, nz] => {
-                self.pc = (nx << 8 | ny << 4 | nz) - 2;
-            }
+            [0x1, nx, ny, nz] => self.pc = nx << 8 | ny << 4 | nz,
             // 2nnn - CALL addr: The interpreter increments the stack pointer, then
             // puts the current PC on the top of the stack. The PC is then set
             // to nnn.
             [0x2, nx, ny, nz] => {
                 self.stack[self.sp as usize] = self.pc + 2;
                 self.sp += 1;
-                self.pc = (nx << 8 | ny << 4 | nz) - 2;
+                self.pc = nx << 8 | ny << 4 | nz;
             }
             // 3xkk - SE Vx, byte: The interpreter compares register Vx to kk,
             // and if they are equal, increments the program counter by 2.
             [0x3, x, kx, ky] => {
                 if self.vn[x as usize] == (kx << 4 | ky) as u8 {
+                    self.pc += 4;
+                } else {
                     self.pc += 2;
                 }
             }
@@ -115,6 +115,8 @@ impl Emulator {
             // and if they are not equal, increments the program counter by 2.
             [0x4, x, kx, ky] => {
                 if self.vn[x as usize] != (kx << 4 | ky) as u8 {
+                    self.pc += 4;
+                } else {
                     self.pc += 2;
                 }
             }
@@ -122,6 +124,8 @@ impl Emulator {
             // Vy, and if they are equal, increments the program counter by 2.
             [0x5, x, y, 0x0] => {
                 if self.vn[x as usize] == self.vn[y as usize] {
+                    self.pc += 4;
+                } else {
                     self.pc += 2;
                 }
             }
@@ -129,30 +133,36 @@ impl Emulator {
             // register Vx.
             [0x6, x, kx, ky] => {
                 self.vn[x as usize] = (kx << 4 | ky) as u8;
+                self.pc += 2;
             }
             // 7xkk - ADD Vx, byte: Adds the value kk to the value of register
             // Vx, then stores the result in Vx.
             [0x7, x, kx, ky] => {
-                self.vn[x as usize] = self.vn[x as usize].wrapping_add((kx << 4 | ky) as u8);
+                self.vn[x as usize] = self.vn[x as usize] + (kx << 4 | ky) as u8;
+                self.pc += 2;
             }
             // 8xy0 - LD Vx, Vy: Stores the value of register Vy in register Vx.
             [0x8, x, y, 0x0] => {
                 self.vn[x as usize] = self.vn[y as usize];
+                self.pc += 2;
             }
             // 8xy1 - OR Vx, Vy: Performs a bitwise OR on the values of Vx and
             // Vy, then stores the result in Vx.
             [0x8, x, y, 0x1] => {
                 self.vn[x as usize] |= self.vn[y as usize];
+                self.pc += 2;
             }
             // 8xy2 - AND Vx, Vy: Performs a bitwise AND on the values of Vx and
             // Vy, then stores the result in Vx.
             [0x8, x, y, 0x2] => {
                 self.vn[x as usize] &= self.vn[y as usize];
+                self.pc += 2;
             }
             // 8xy3 - XOR Vx, Vy: Performs a bitwise exclusive OR on the values
             // of Vx and Vy, then stores the result in Vx.
             [0x8, x, y, 0x3] => {
                 self.vn[x as usize] ^= self.vn[y as usize];
+                self.pc += 2;
             }
             // 8xy4 - ADD Vx, Vy: The values of Vx and Vy are added together. If
             // the result is greater than 8 bits (i.e., > 255,) VF is set to 1,
@@ -161,6 +171,7 @@ impl Emulator {
                 let (sum, carry) = self.vn[x as usize].overflowing_add(self.vn[y as usize]);
                 self.vn[0xF] = if carry { 1 } else { 0 };
                 self.vn[x as usize] = sum;
+                self.pc += 2;
             }
             // 8xy5 - SUB Vx, Vy: If Vx > Vy, then VF is set to 1, otherwise
             // 0. Then Vy is subtracted from Vx, and the results stored in Vx.
@@ -168,12 +179,14 @@ impl Emulator {
                 let carry = self.vn[x as usize] > self.vn[y as usize];
                 self.vn[0xF] = if carry { 1 } else { 0 };
                 self.vn[x as usize] = self.vn[x as usize].wrapping_sub(self.vn[y as usize]);
+                self.pc += 2;
             }
             // 8xy6 - SHR Vx {, Vy}: If the least-significant bit of Vx is 1,
             // then VF is set to 1, otherwise 0. Then Vx is divided by 2.
             [0x8, x, _, 0x6] => {
                 self.vn[0xF] = self.vn[x as usize] & 0x1;
                 self.vn[x as usize] >>= 1;
+                self.pc += 2;
             }
             // 8xy7 - SUBN Vx, Vy: If Vy > Vx, then VF is set to 1, otherwise
             // 0. Then Vx is subtracted from Vy, and the results stored in Vx.
@@ -181,28 +194,33 @@ impl Emulator {
                 let carry = self.vn[y as usize] > self.vn[x as usize];
                 self.vn[0xF] = if carry { 1 } else { 0 };
                 self.vn[x as usize] = self.vn[y as usize].wrapping_sub(self.vn[x as usize]);
+                self.pc += 2;
             }
             // 8xyE - SHL Vx {, Vy}: If the most-significant bit of Vx is 1,
             // then VF is set to 1, otherwise to 0. Then Vx is multiplied by 2.
             [0x8, x, _, 0xE] => {
                 self.vn[0xF] = (self.vn[x as usize] & 0x80) >> 7;
                 self.vn[x as usize] <<= 1;
+                self.pc += 2;
             }
             // 9xy0 - SNE Vx, Vy: The values of Vx and Vy are compared, and if
             // they are not equal, the program counter is increased by 2.
             [0x9, x, y, 0x0] => {
                 if self.vn[x as usize] != self.vn[y as usize] {
+                    self.pc += 4;
+                } else {
                     self.pc += 2;
                 }
             }
             // Annn - LD I, addr: The value of register I is set to nnn.
             [0xA, nx, ny, nz] => {
                 self.i = nx >> 8 | ny >> 4 | nz;
+                self.pc += 2;
             }
             // Bnnn - JP V0, addr: The program counter is set to nnn plus the
             // value of V0.
             [0xB, nx, ny, nz] => {
-                self.pc = nx >> 8 | ny >> 4 | nz + self.vn[0x0] as u16;
+                self.pc = (nx >> 8 | ny >> 4 | nz) + self.vn[0x0] as u16;
             }
             // Cxkk - RND Vx, byte: The interpreter generates a random number
             // from 0 to 255, which is then ANDed with the value kk. The results
@@ -212,6 +230,7 @@ impl Emulator {
                 if getrandom::getrandom(&mut buffer).is_ok() {
                     self.vn[x as usize] = buffer[0] & (kx << 4 | ky) as u8;
                 }
+                self.pc += 2;
             }
             // Dxyn - DRW Vx, Vy, nibble: The interpreter reads n bytes from
             // memory, starting at the address stored in I. These bytes are
@@ -227,18 +246,21 @@ impl Emulator {
                     let y = (self.vn[y as usize] + byte as u8) % 32;
                     for bit in 0..8 {
                         let x = (self.vn[x as usize] + bit) % 64;
-                        let color = self.ram[(self.i + byte as u16) as usize] >> (7 - bit) & 1;
+                        let color = (self.ram[(self.i + byte as u16) as usize] >> (7 - bit)) & 0x1;
                         self.gfx[x as usize + (y as usize) * 64] ^= color;
-                        self.vn[0xF] |= color & self.gfx[x as usize + (y as usize) * 64] as u8;
+                        self.vn[0xF] |= color & self.gfx[x as usize + (y as usize) * 64];
                     }
                 }
                 self.update = true;
+                self.pc += 2;
             }
             // Ex9E - SKP Vx: Checks the keyboard, and if the key corresponding
             // to the value of Vx is currently in the down position, PC is
             // increased by 2.
             [0xE, x, 0x9, 0xE] => {
                 if self.keyboard[self.vn[x as usize] as usize] {
+                    self.pc += 4;
+                } else {
                     self.pc += 2;
                 }
             }
@@ -247,17 +269,19 @@ impl Emulator {
             // increased by 2.
             [0xE, x, 0xA, 0x1] => {
                 if !self.keyboard[self.vn[x as usize] as usize] {
+                    self.pc += 4;
+                } else {
                     self.pc += 2;
                 }
             }
             // Fx07 - Ld Vx, DT: The value of DT is placed into Vx.
             [0xF, x, 0x0, 0x7] => {
                 self.vn[x as usize] = self.dt;
+                self.pc += 2;
             }
             // Fx0A - LD Vx, K: All execution stops until a key is pressed, then
             // the value of that key is stored in Vx.
             [0xF, x, 0x0, 0xA] => {
-                self.pc -= 2;
                 for (i, key) in self.keyboard.iter().enumerate() {
                     if *key {
                         self.vn[x as usize] = i as u8;
@@ -269,34 +293,34 @@ impl Emulator {
             // Fx15 - LD DT, Vx: DT is set equal to the value of Vx.
             [0xF, x, 0x1, 0x5] => {
                 self.dt = self.vn[x as usize];
+                self.pc += 2;
             }
             // Fx18 - LD ST, Vx: ST is set equal to the value of Vx.
             [0xF, x, 0x1, 0x8] => {
                 self.st = self.vn[x as usize];
+                self.pc += 2;
             }
             // Fx1E - ADD I, Vx: The values of I and Vx are added, and the
             // results are stored in I.
             [0xF, x, 0x1, 0xE] => {
                 self.i += self.vn[x as usize] as u16;
                 self.vn[0xF] = if self.i > 0x0F00 { 1 } else { 0 };
+                self.pc += 2;
             }
             // Fx29 - LD F, Vx: The value of I is set to the location for the
             // hexadecimal sprite corresponding to the value of Vx.
             [0xF, x, 0x2, 0x9] => {
-                self.i = (self.vn[x as usize] as u16).wrapping_mul(0x5);
+                self.i = (self.vn[x as usize] as u16) * 5;
+                self.pc += 2;
             }
             // Fx33 - LD B, Vx: The interpreter takes the decimal value of Vx,
             // and places the hundreds digit in memory at location in I, the
             // tens digit at location I+1, and the ones digit at location I+2.
             [0xF, x, 0x3, 0x3] => {
-                for (i, digit) in self.vn[x as usize]
-                    .to_string()
-                    .bytes()
-                    .map(|b| (b - b'0') as u8)
-                    .enumerate()
-                {
-                    self.ram[self.i as usize + i] = digit;
-                }
+                self.ram[(self.i + 0) as usize] = self.vn[x as usize] / 100;
+                self.ram[(self.i + 1) as usize] = self.vn[x as usize] % 100 / 10;
+                self.ram[(self.i + 2) as usize] = self.vn[x as usize] % 10;
+                self.pc += 2;
             }
             // Fx55 - LD [I], Vx: The interpreter copies the values of registers
             // V0 through Vx into memory, starting at the address in I. I is set
@@ -306,6 +330,7 @@ impl Emulator {
                     self.ram[self.i as usize + i] = *value;
                 }
                 self.i += x + 1;
+                self.pc += 2;
             }
             // Fx65 - LD Vx, [I]: The interpreter reads values from memory
             // starting at location I into registers V0 through Vx. I is set to
@@ -314,10 +339,10 @@ impl Emulator {
                 for i in 0..=(x as usize) {
                     self.vn[i] = self.ram[self.i as usize + i];
                 }
+                self.pc += 2;
             }
             _ => todo!("Invalid opcode: {:#04x} as {:?}", input, slice),
         }
-        self.pc += 2;
     }
 
     /// Returns true when program should beep
@@ -325,6 +350,12 @@ impl Emulator {
         self.delay = self.delay.saturating_sub(1);
         self.sound = self.sound.saturating_sub(1);
         self.sound > 0
+    }
+}
+
+impl Default for Emulator {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -341,9 +372,16 @@ fn main() {
     color_backtrace::install();
 
     // Initialize emulator with rom
-    let rom = include_bytes!("../roms/games/paddles.ch8");
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.len() == 0 {
+        println!("Usage: chip8 <rom>");
+        return;
+    }
+    let mut file = File::open(&args[0])?;
+    let mut rom = [0; 3584];
+    file.read(&mut rom)?;
     let mut emulator = Emulator::new();
-    emulator.load(rom);
+    emulator.load(&rom);
 
     // Initialize terminal
     let mut screen = AlternateScreen::from(stdout().into_raw_mode()?);
@@ -412,11 +450,16 @@ fn main() {
                 if emulator.update {
                     write!(screen, "{}", termion::clear::All)?;
                     for (i, chunk) in emulator.gfx.chunks(64).enumerate() {
-                        let line = chunk
-                            .iter()
-                            .map(|p| if *p != 0 { "██" } else { "  " })
-                            .collect::<String>();
-                        write!(screen, "{}{}", termion::cursor::Goto(1, i as u16), line)?;
+                        write!(screen, "{}", termion::cursor::Goto(1, 1 + i as u16))?;
+                        for bit in chunk {
+                            let color = if *bit != 0 { 5 } else { 0 };
+                            write!(
+                                screen,
+                                "{}{}█",
+                                termion::color::Fg(termion::color::AnsiValue::rgb(color, color, color)),
+                                termion::color::Bg(termion::color::Black)
+                            )?;
+                        }
                     }
                     screen.flush()?;
                     emulator.update = false;
