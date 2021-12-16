@@ -1,13 +1,19 @@
 use fehler::throws;
-use std::io::{stdout, Write};
-use std::time::Instant;
-use std::{io::stdin, sync::mpsc, thread};
-use termion::event::Key;
-use termion::input::TermRead;
-use termion::raw::IntoRawMode;
-use termion::screen::*;
-use std::io::prelude::*;
-use std::fs::File;
+use std::{
+    fs::File,
+    io::{prelude::*, stdin, stdout},
+    sync::mpsc,
+    thread,
+    time::Instant,
+};
+use termion::{event::Key, input::TermRead, raw::IntoRawMode, screen::*};
+use tui::{
+    backend::TermionBackend,
+    layout::Rect,
+    text::{Span, Spans},
+    widgets::{Block, Borders, Paragraph, Wrap},
+    Terminal,
+};
 type Error = anyhow::Error;
 
 // Fonts from 0x0..0xF
@@ -378,14 +384,17 @@ fn main() {
         return;
     }
     let mut file = File::open(&args[0])?;
+    let name = args[0].split("/").last().unwrap();
     let mut rom = [0; 3584];
     file.read(&mut rom)?;
     let mut emulator = Emulator::new();
     emulator.load(&rom);
 
     // Initialize terminal
-    let mut screen = AlternateScreen::from(stdout().into_raw_mode()?);
-    write!(screen, "{}", termion::cursor::Hide)?;
+    let screen = AlternateScreen::from(stdout().into_raw_mode()?);
+    let backend = TermionBackend::new(screen);
+    let mut terminal = Terminal::new(backend)?;
+    // write!(screen, "{}", termion::cursor::Hide)?;
 
     // Initialize channels
     let (tx, rx) = mpsc::channel();
@@ -435,36 +444,65 @@ fn main() {
             }
             Event::Quit => break 'logic,
             Event::Tick => {
-                emulator.keyboard.iter_mut().for_each(|k| *k = k.saturating_sub(1));
+                emulator
+                    .keyboard
+                    .iter_mut()
+                    .for_each(|k| *k = k.saturating_sub(1));
+
                 if emulator.tick() {
                     // Beep
-                    write!(screen, "\x07")?;
                 }
-            }
-            Event::Update => {
-                // Do next cycle
-                emulator.cycle();
 
                 // Draw on change
-                if emulator.update {
-                    write!(screen, "{}", termion::clear::All)?;
-                    for (i, chunk) in emulator.gfx.chunks(64).take(31).enumerate() {
-                        write!(screen, "{}", termion::cursor::Goto(1, 1 + i as u16))?;
-                        for bit in chunk {
-                            let color = if *bit != 0 { 5 } else { 0 };
-                            write!(
-                                screen,
-                                "{}{}█",
-                                termion::color::Fg(termion::color::AnsiValue::rgb(color, color, color)),
-                                termion::color::Bg(termion::color::Black)
-                            )?;
-                        }
-                    }
-                    screen.flush()?;
-                    emulator.update = false;
-                }
+                terminal.draw(|frame| {
+                    // The game
+                    let bits = emulator
+                        .gfx
+                        .chunks(64)
+                        .map(|chunk| {
+                            Spans::from(
+                                chunk
+                                    .iter()
+                                    .map(|bit| {
+                                        if *bit != 0 {
+                                            Span::raw("█")
+                                        } else {
+                                            Span::raw(" ")
+                                        }
+                                    })
+                                    .collect::<Vec<_>>(),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let game = Paragraph::new(bits)
+                        .block(Block::default().title(name).borders(Borders::ALL));
+                    frame.render_widget(game, Rect::new(0, 0, 64, 32));
+
+                    // The cpu
+                    let registers = emulator.vn.map(|v| format!("{:#x}", v)).join(", ");
+                    let stack = emulator.stack.map(|v| format!("{:#x}", v)).join(", ");
+                    let keyboard = emulator.keyboard.map(|v| format!("{:#x}", v)).join(", ");
+                    let data = vec![
+                        Spans::from(format!("registers: [{}]", registers)),
+                        Spans::from(format!("keyboard: [{}]", keyboard)),
+                        Spans::from(format!("stack: [{}]", stack)),
+                        Spans::from(format!("program_counter: {:#x}", emulator.pc)),
+                        Spans::from(format!("stack_pointer: {:#x}", emulator.sp)),
+                        Spans::from(format!("delay_timer: {:#x}", emulator.dt)),
+                        Spans::from(format!("sound_timer: {:#x}", emulator.st)),
+                        Spans::from(format!("sound: {:#x}", emulator.sound)),
+                        Spans::from(format!("delay: {:#x}", emulator.delay)),
+                        Spans::from(format!("index: {:#x}", emulator.i)),
+                    ];
+                    let cpu = Paragraph::new(data)
+                        .block(Block::default().title("CPU").borders(Borders::ALL))
+                        .wrap(Wrap { trim: false });
+                    frame.render_widget(cpu, Rect::new(64, 0, 95, 32));
+                })?;
+            }
+            Event::Update => {
+                emulator.cycle();
             }
         }
     }
-    write!(screen, "{}", termion::cursor::Show)?;
 }
