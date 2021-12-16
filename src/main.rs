@@ -479,25 +479,52 @@ fn main() {
                     frame.render_widget(game, Rect::new(0, 0, 64, 32));
 
                     // The cpu
-                    let registers = emulator.vn.map(|v| format!("{:#x}", v)).join(", ");
-                    let stack = emulator.stack.map(|v| format!("{:#x}", v)).join(", ");
+                    let registers = emulator.vn.map(|v| format!("{:#04x}", v)).join(", ");
+                    let stack = emulator.stack.map(|v| format!("{:#06x}", v)).join(", ");
                     let keyboard = emulator.keyboard.map(|v| format!("{:#x}", v)).join(", ");
+                    let i = emulator.pc as usize;
+                    let opcode = (emulator.ram[i] as u16) << 8 | emulator.ram[i + 1] as u16;
+                    let value = emulator.stack[emulator.sp as usize];
                     let data = vec![
                         Spans::from(format!("registers: [{}]", registers)),
                         Spans::from(format!("keyboard: [{}]", keyboard)),
                         Spans::from(format!("stack: [{}]", stack)),
                         Spans::from(format!("program counter: {:#x}", emulator.pc)),
                         Spans::from(format!("stack pointer: {:#x}", emulator.sp)),
+                        Spans::from(format!("stack value: {:#x}", value)),
                         Spans::from(format!("delay timer: {:#x}", emulator.dt)),
                         Spans::from(format!("sound timer: {:#x}", emulator.st)),
+                        Spans::from(format!("opcode: {:#04x}", opcode)),
+                        Spans::from(format!("index: {:#x}", emulator.i)),
                         Spans::from(format!("sound: {:#x}", emulator.sound)),
                         Spans::from(format!("delay: {:#x}", emulator.delay)),
-                        Spans::from(format!("index: {:#x}", emulator.i)),
                     ];
                     let cpu = Paragraph::new(data)
                         .block(Block::default().title("CPU").borders(Borders::ALL))
                         .wrap(Wrap { trim: false });
-                    frame.render_widget(cpu, Rect::new(64, 0, 95, 32));
+                    frame.render_widget(cpu, Rect::new(64, 0, 95, 16));
+
+                    // The memory
+                    let items = 18;
+                    let lines = 14;
+                    let middle = (items * lines) / 2;
+                    let view = &emulator.ram[(emulator.pc as usize).saturating_sub(middle)..]
+                        .iter()
+                        .take(items * lines)
+                        .collect::<Vec<_>>();
+                    let parts = view
+                        .chunks(items)
+                        .map(|row| {
+                            Spans::from(
+                                row.iter()
+                                    .map(|x| Span::raw(format!("{:#04x} ", x)))
+                                    .collect::<Vec<_>>(),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let ram = Paragraph::new(parts)
+                        .block(Block::default().title("RAM").borders(Borders::ALL));
+                    frame.render_widget(ram, Rect::new(64, 16, 95, 16));
                 })?;
             }
             Event::Update => {
